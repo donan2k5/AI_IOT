@@ -1,97 +1,97 @@
-import tkinter as tk
-from tkinter import filedialog
-from tkinter import *
-from PIL import ImageTk, Image
 import numpy as np
-
-# Load the trained model to classify signs
+import cv2
+from PIL import Image
 from keras.models import load_model
+import os
+
+# Load model
 model = load_model('my_model.h5')
 
-# IMPORTANT:
-# The model was trained on 43 classes. Its output will be an index from 0 to 42.
-# We need to map the original index that the model predicts to our new desired output.
-# From your original 'classes' dictionary:
-# - 'Stop' was class 15 (model index 14)
-# - 'Turn right ahead' was class 34 (model index 33)
-# - 'Turn left ahead' was class 35 (model index 34)
-
-# New dictionary to map the model's output index to your desired string
+# Nhãn đầu ra
 target_classes = {
-    14: "stop: 0",
-    33: "right: 2",
-    34: "left: 1"
+    14: 0,  # stop
+    33: 2,  # right
+    34: 1   # left
 }
 
-# Initialise GUI
-top = tk.Tk()
-top.geometry('800x600')
-top.title('Nhận dạng biển báo giao thông')
-top.configure(background='#ffffff')
+def zoom_crop_expand(image_path, zoom=3.0, padding=35):  # Đổi padding ở đây
+    img = cv2.imread(image_path)
+    if img is None:
+        print(f"[ERROR] Không tìm thấy ảnh: {image_path}")
+        return None
 
-label = Label(top, background='#ffffff', font=('arial', 15, 'bold'))
-sign_image = Label(top)
+    h, w = img.shape[:2]
+    new_w, new_h = int(w * zoom), int(h * zoom)
+    img_zoomed = cv2.resize(img, (new_w, new_h))
+    x_start = (new_w - w) // 2
+    y_start = (new_h - h) // 2
+    img_cropped = img_zoomed[y_start:y_start + h, x_start:x_start + w]
 
-def classify(file_path):
-    image = Image.open(file_path).convert('RGB')
-    image = image.resize((30, 30))
-    image = np.expand_dims(image, axis=0)
-    image = np.array(image)
+    hsv = cv2.cvtColor(img_cropped, cv2.COLOR_BGR2HSV)
 
-    # Predict class
-    pred_index = np.argmax(model.predict(image)[0])
+    # Màu đỏ
+    lower_red1 = np.array([0, 70, 50])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([170, 70, 50])
+    upper_red2 = np.array([180, 255, 255])
 
-    # Check if the predicted index is one of the classes we want
-    if pred_index in target_classes:
-        sign = target_classes[pred_index]
+    # Màu xanh dương
+    lower_blue = np.array([90, 50, 50])
+    upper_blue = np.array([130, 255, 255])
+
+    # Mask
+    mask_red = cv2.inRange(hsv, lower_red1, upper_red1) | cv2.inRange(hsv, lower_red2, upper_red2)
+    mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
+    mask = cv2.bitwise_or(mask_red, mask_blue)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        x, y, w_box, h_box = cv2.boundingRect(max(contours, key=cv2.contourArea))
+
+        # Lùi lại một khoảng padding
+        x = max(0, x - padding)
+        y = max(0, y - padding)
+        x2 = min(img_cropped.shape[1], x + w_box + 2 * padding)
+        y2 = min(img_cropped.shape[0], y + h_box + 2 * padding)
+
+        cropped = img_cropped[y:y2, x:x2]
     else:
-        # If the sign is not 'Stop', 'Left', or 'Right', show a message
-        sign = "Không phải biển báo yêu cầu"
-    
-    print(f"Model predicted index: {pred_index} -> Output: {sign}")
-    label.configure(foreground='#011638', text=sign)
+        print("⚠ Không tìm thấy vùng đỏ hoặc xanh dương.")
+        cropped = img_cropped
 
-def show_classify_button(file_path):
-    classify_b = Button(top, text="Nhận dạng", command=lambda: classify(file_path), padx=10, pady=5)
-    classify_b.configure(background='#c71b20', foreground='white', font=('arial', 10, 'bold'))
-    classify_b.place(relx=0.79, rely=0.46)
+    # Convert sang RGB để dùng với PIL
+    cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(cropped_rgb)
 
-def upload_image():
+def predict_traffic_sign(image_path):
     try:
-        file_path = filedialog.askopenfilename()
-        uploaded = Image.open(file_path)
-        uploaded.thumbnail(((top.winfo_width() / 2.25), (top.winfo_height() / 2.25)))
-        im = ImageTk.PhotoImage(uploaded)
+        if not os.path.exists(image_path):
+            print(f"File not found: {image_path}")
+            return -1
 
-        sign_image.configure(image=im)
-        sign_image.image = im
-        label.configure(text='')
-        show_classify_button(file_path)
+        print(f"Processing image: {image_path}")
+        processed_img = zoom_crop_expand(image_path, zoom=3.0, padding=35)  # Đổi padding ở đây luôn
+        if processed_img is None:
+            return -1
+
+        image = processed_img.convert('RGB').resize((30, 30))
+        image = np.expand_dims(np.array(image), axis=0)
+
+        pred_index = np.argmax(model.predict(image)[0])
+        if pred_index in target_classes:
+            result = target_classes[pred_index]
+            print(f"Model predicted index: {pred_index} -> Output: {result}")
+            return result
+        else:
+            print(f"Model predicted index: {pred_index} -> Not a recognized sign")
+            return -1
+
     except Exception as e:
-        print(f"Error: {e}")
-        pass
+        print(f"Error processing image: {e}")
+        return -1
 
-upload = Button(top, text="Upload an image", command=upload_image, padx=10, pady=5)
-upload.configure(background='#c71b20', foreground='white', font=('arial', 10, 'bold'))
-
-upload.pack(side=BOTTOM, pady=50)
-sign_image.pack(side=BOTTOM, expand=True)
-label.pack(side=BOTTOM, expand=True)
-
-heading = Label(top, text="Nhận dạng biển báo giao thông", pady=10, font=('arial', 20, 'bold'))
-heading.configure(background='#ffffff', foreground='#364156')
-heading.pack()
-
-heading1 = Label(top, text="Môn Học: Cơ sở ứng dụng AI", pady=10, font=('arial', 20, 'bold'))
-heading1.configure(background='#ffffff', foreground='#364156')
-heading1.pack()
-
-heading2 = Label(top, text="Danh sách thành viên nhóm", pady=5, font=('arial', 20, 'bold'))
-heading2.configure(background='#ffffff', foreground='#364156')
-heading2.pack()
-
-heading3 = Label(top, text="Văn Huy Du MSSV: 20119205", pady=5, font=('arial', 20, 'bold'))
-heading3.configure(background='#ffffff', foreground='#364156')
-heading3.pack()
-
-top.mainloop()
+# Chạy thử
+if __name__ == "__main__":
+    image_path = "D:\Study\Python\Iotfpt\image\ANH\Anh_PI\image.jpg"
+    result = predict_traffic_sign(image_path)
+    print(f"Final Prediction: {result}")
